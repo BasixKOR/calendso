@@ -3,9 +3,8 @@
   "name": "Fathom",
   "slug": "fathom",
   "type": "fathom_analytics",
-  "imageSrc": "/api/app-store/fathom/icon.svg",
-  "logo": "/api/app-store/fathom/icon.svg",
-  "url": "https://cal.com/apps/fathom",
+  "logo": "icon.svg",
+  "url": "https://cal.com",
   "variant": "analytics",
   "categories": ["analytics"],
   "publisher": "Cal.com, Inc.",
@@ -24,5 +23,6 @@
     }
   },
   "description": "Fathom Analytics provides simple, privacy-focused website analytics. We're a GDPR-compliant, Google Analytics alternative.",
-  "__createdUsingCli": true
+  "__createdUsingCli": true,
+  "isOAuth": false
 }

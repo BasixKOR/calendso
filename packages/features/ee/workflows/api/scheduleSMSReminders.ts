@@ -1,14 +1,20 @@
 /* Schedule any workflow reminder that falls within 7 days for SMS */
-import { WorkflowActions, WorkflowMethods, WorkflowTemplates } from "@prisma/client";
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import dayjs from "@calcom/dayjs";
+import { getShortenLink } from "@calcom/ee/workflows/lib/reminders/utils";
+import { getCalEventResponses } from "@calcom/features/bookings/lib/getCalEventResponses";
+import { getBookerBaseUrl } from "@calcom/lib/getBookerUrl/server";
 import { defaultHandler } from "@calcom/lib/server";
+import { getTimeFormatStringFromUserTimeFormat } from "@calcom/lib/timeFormat";
 import prisma from "@calcom/prisma";
+import { WorkflowActions, WorkflowMethods, WorkflowTemplates } from "@calcom/prisma/enums";
 import { bookingMetadataSchema } from "@calcom/prisma/zod-utils";
 
 import { getSenderId } from "../lib/alphanumericSenderIdSupport";
-import * as twilio from "../lib/reminders/smsProviders/twilioProvider";
+import type { PartialWorkflowReminder } from "../lib/getWorkflowReminders";
+import { select } from "../lib/getWorkflowReminders";
+import * as twilio from "../lib/reminders/providers/twilioProvider";
 import type { VariablesType } from "../lib/reminders/templates/customTemplate";
 import customTemplate from "../lib/reminders/templates/customTemplate";
 import smsReminderTemplate from "../lib/reminders/templates/smsReminderTemplate";
@@ -23,15 +29,24 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
   //delete all scheduled sms reminders where scheduled date is past current date
   await prisma.workflowReminder.deleteMany({
     where: {
-      method: WorkflowMethods.SMS,
-      scheduledDate: {
-        lte: dayjs().toISOString(),
-      },
+      OR: [
+        {
+          method: WorkflowMethods.SMS,
+          scheduledDate: {
+            lte: dayjs().toISOString(),
+          },
+        },
+        {
+          retryCount: {
+            gt: 1,
+          },
+        },
+      ],
     },
   });
 
   //find all unscheduled SMS reminders
-  const unscheduledReminders = await prisma.workflowReminder.findMany({
+  const unscheduledReminders = (await prisma.workflowReminder.findMany({
     where: {
       method: WorkflowMethods.SMS,
       scheduled: false,
@@ -39,24 +54,24 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         lte: dayjs().add(7, "day").toISOString(),
       },
     },
-    include: {
-      workflowStep: true,
-      booking: {
-        include: {
-          eventType: true,
-          user: true,
-          attendees: true,
-        },
-      },
+    select: {
+      ...select,
+      retryCount: true,
     },
-  });
+  })) as (PartialWorkflowReminder & { retryCount: number })[];
 
-  if (!unscheduledReminders.length) res.json({ ok: true });
+  if (!unscheduledReminders.length) {
+    res.json({ ok: true });
+    return;
+  }
 
   for (const reminder of unscheduledReminders) {
     if (!reminder.workflowStep || !reminder.booking) {
       continue;
     }
+    const userId = reminder.workflowStep.workflow.userId;
+    const teamId = reminder.workflowStep.workflow.teamId;
+
     try {
       const sendTo =
         reminder.workflowStep.action === WorkflowActions.SMS_NUMBER
@@ -86,53 +101,136 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
           ? reminder.booking?.attendees[0].locale
           : reminder.booking?.user?.locale;
 
-      let message: string | null = reminder.workflowStep.reminderBody;
-      switch (reminder.workflowStep.template) {
-        case WorkflowTemplates.REMINDER:
-          message = smsReminderTemplate(
-            reminder.booking?.startTime.toISOString() || "",
-            reminder.booking?.eventType?.title || "",
-            timeZone || "",
-            attendeeName || "",
-            userName
-          );
-          break;
-        case WorkflowTemplates.CUSTOM:
-          const variables: VariablesType = {
-            eventName: reminder.booking?.eventType?.title,
-            organizerName: reminder.booking?.user?.name || "",
-            attendeeName: reminder.booking?.attendees[0].name,
-            attendeeEmail: reminder.booking?.attendees[0].email,
-            eventDate: dayjs(reminder.booking?.startTime).tz(timeZone),
-            eventTime: dayjs(reminder.booking?.startTime).tz(timeZone),
-            timeZone: timeZone,
-            location: reminder.booking?.location || "",
-            additionalNotes: reminder.booking?.description,
-            customInputs: reminder.booking?.customInputs,
-            meetingUrl: bookingMetadataSchema.parse(reminder.booking?.metadata || {})?.videoCallUrl,
-          };
-          const customMessage = await customTemplate(
-            reminder.workflowStep.reminderBody || "",
-            variables,
-            locale || ""
-          );
-          message = customMessage.text;
-          break;
-      }
-      if (message?.length && message?.length > 0 && sendTo) {
-        const scheduledSMS = await twilio.scheduleSMS(sendTo, message, reminder.scheduledDate, senderID);
+      let message: string | null = reminder.workflowStep.reminderBody || null;
 
-        await prisma.workflowReminder.update({
+      if (reminder.workflowStep.reminderBody) {
+        const { responses } = getCalEventResponses({
+          bookingFields: reminder.booking.eventType?.bookingFields ?? null,
+          booking: reminder.booking,
+        });
+
+        const organizerOrganizationProfile = await prisma.profile.findFirst({
           where: {
-            id: reminder.id,
-          },
-          data: {
-            scheduled: true,
-            referenceId: scheduledSMS.sid,
+            userId: reminder.booking.user?.id,
           },
         });
+
+        const organizerOrganizationId = organizerOrganizationProfile?.organizationId;
+
+        const bookerUrl = await getBookerBaseUrl(
+          reminder.booking.eventType?.team?.parentId ?? organizerOrganizationId ?? null
+        );
+
+        const urls = {
+          meetingUrl: bookingMetadataSchema.parse(reminder.booking?.metadata || {})?.videoCallUrl || "",
+          cancelLink: `${bookerUrl}/booking/${reminder.booking.uid}?cancel=true` || "",
+          rescheduleLink: `${bookerUrl}/reschedule/${reminder.booking.uid}` || "",
+        };
+
+        const [meetingUrl, cancelLink, rescheduleLink] = await Promise.allSettled([
+          getShortenLink(urls.meetingUrl),
+          getShortenLink(urls.cancelLink),
+          getShortenLink(urls.rescheduleLink),
+        ]).then((results) => {
+          return results.map((result) => {
+            let finalResult = "";
+
+            if (result.status === "fulfilled") {
+              const v = result.value;
+              if (typeof v === "string") {
+                finalResult = v;
+              } else {
+                finalResult = v.shortLink;
+              }
+            }
+
+            return finalResult;
+          });
+        });
+
+        const variables: VariablesType = {
+          eventName: reminder.booking?.eventType?.title,
+          organizerName: reminder.booking?.user?.name || "",
+          attendeeName: reminder.booking?.attendees[0].name,
+          attendeeEmail: reminder.booking?.attendees[0].email,
+          eventDate: dayjs(reminder.booking?.startTime).tz(timeZone),
+          eventEndTime: dayjs(reminder.booking?.endTime).tz(timeZone),
+          timeZone: timeZone,
+          location: reminder.booking?.location || "",
+          additionalNotes: reminder.booking?.description,
+          responses: responses,
+          meetingUrl,
+          cancelLink,
+          rescheduleLink,
+          attendeeTimezone: reminder.booking.attendees[0].timeZone,
+          eventTimeInAttendeeTimezone: dayjs(reminder.booking.startTime).tz(
+            reminder.booking.attendees[0].timeZone
+          ),
+          eventEndTimeInAttendeeTimezone: dayjs(reminder.booking?.endTime).tz(
+            reminder.booking.attendees[0].timeZone
+          ),
+        };
+        const customMessage = customTemplate(
+          reminder.workflowStep.reminderBody || "",
+          variables,
+          locale || "en",
+          getTimeFormatStringFromUserTimeFormat(reminder.booking.user?.timeFormat)
+        );
+        message = customMessage.text;
+      } else if (reminder.workflowStep.template === WorkflowTemplates.REMINDER) {
+        message = smsReminderTemplate(
+          false,
+          reminder.booking.user?.locale || "en",
+          reminder.workflowStep.action,
+          getTimeFormatStringFromUserTimeFormat(reminder.booking.user?.timeFormat),
+          reminder.booking?.startTime.toISOString() || "",
+          reminder.booking?.eventType?.title || "",
+          timeZone || "",
+          attendeeName || "",
+          userName
+        );
+      }
+
+      if (message?.length && message?.length > 0 && sendTo) {
+        const scheduledSMS = await twilio.scheduleSMS(
+          sendTo,
+          message,
+          reminder.scheduledDate,
+          senderID,
+          userId,
+          teamId
+        );
+
+        if (scheduledSMS) {
+          await prisma.workflowReminder.update({
+            where: {
+              id: reminder.id,
+            },
+            data: {
+              scheduled: true,
+              referenceId: scheduledSMS.sid,
+            },
+          });
+        } else {
+          await prisma.workflowReminder.update({
+            where: {
+              id: reminder.id,
+            },
+            data: {
+              retryCount: reminder.retryCount + 1,
+            },
+          });
+        }
       }
     } catch (error) {
+      await prisma.workflowReminder.update({
+        where: {
+          id: reminder.id,
+        },
+        data: {
+          retryCount: reminder.retryCount + 1,
+        },
+      });
       console.log(`Error scheduling SMS with error ${error}`);
     }
   }

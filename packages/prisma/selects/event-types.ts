@@ -11,7 +11,9 @@ export const baseEventTypeSelect = Prisma.validator<Prisma.EventTypeSelect>()({
   hidden: true,
   price: true,
   currency: true,
+  lockTimeZoneToggleOnBookingPage: true,
   requiresConfirmation: true,
+  requiresBookerEmailVerification: true,
 });
 
 export const bookEventTypeSelect = Prisma.validator<Prisma.EventTypeSelect>()({
@@ -27,7 +29,9 @@ export const bookEventTypeSelect = Prisma.validator<Prisma.EventTypeSelect>()({
   periodStartDate: true,
   periodEndDate: true,
   recurringEvent: true,
+  lockTimeZoneToggleOnBookingPage: true,
   requiresConfirmation: true,
+  requiresBookerEmailVerification: true,
   metadata: true,
   periodCountCalendarDays: true,
   price: true,
@@ -52,8 +56,20 @@ export const bookEventTypeSelect = Prisma.validator<Prisma.EventTypeSelect>()({
       name: true,
       email: true,
       bio: true,
-      avatar: true,
+      avatarUrl: true,
       theme: true,
+    },
+  },
+  successRedirectUrl: true,
+  team: {
+    select: {
+      logoUrl: true,
+      parent: {
+        select: {
+          logoUrl: true,
+          name: true,
+        },
+      },
     },
   },
 });
@@ -64,6 +80,7 @@ export const availiblityPageEventTypeSelect = Prisma.validator<Prisma.EventTypeS
   availability: true,
   description: true,
   length: true,
+  offsetStart: true,
   price: true,
   currency: true,
   periodType: true,
@@ -94,11 +111,22 @@ export const availiblityPageEventTypeSelect = Prisma.validator<Prisma.EventTypeS
   users: {
     select: {
       id: true,
-      avatar: true,
+      avatarUrl: true,
       name: true,
       username: true,
       hideBranding: true,
       timeZone: true,
+    },
+  },
+  team: {
+    select: {
+      logoUrl: true,
+      parent: {
+        select: {
+          logoUrl: true,
+          name: true,
+        },
+      },
     },
   },
 });

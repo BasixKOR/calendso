@@ -1,3 +1,4 @@
+import { SchedulingType } from "@calcom/prisma/enums";
 import type { CalendarEvent, Person } from "@calcom/types/Calendar";
 
 import { BaseScheduledEmail } from "./BaseScheduledEmail";
@@ -9,6 +10,7 @@ export const OrganizerScheduledEmail = (
     newSeat?: boolean;
     attendeeCancelled?: boolean;
     teamMember?: Person;
+    reassigned?: { name: string | null; email: string; reason?: string; byUser?: string };
   } & Partial<React.ComponentProps<typeof BaseScheduledEmail>>
 ) => {
   let subject;
@@ -29,21 +31,38 @@ export const OrganizerScheduledEmail = (
   }
 
   const t = props.teamMember?.language.translate || props.calEvent.organizer.language.translate;
+  const locale = props.teamMember?.language.locale || props.calEvent.organizer.language.locale;
+  const timeFormat = props.teamMember?.timeFormat || props.calEvent.organizer?.timeFormat;
+
+  const isTeamEvent =
+    props.calEvent.schedulingType === SchedulingType.ROUND_ROBIN ||
+    props.calEvent.schedulingType === SchedulingType.COLLECTIVE;
+  const attendee = isTeamEvent && props.teamMember ? props.teamMember : props.attendee;
+
   return (
     <BaseScheduledEmail
+      locale={locale}
       timeZone={props.teamMember?.timeZone || props.calEvent.organizer.timeZone}
       t={t}
       subject={t(subject)}
       title={t(title)}
       includeAppsStatus
+      timeFormat={timeFormat}
+      isOrganizer
       subtitle={
-        <>
-          {props.attendeeCancelled
-            ? t("attendee_no_longer_attending_subtitle", { name: props.attendee.name })
-            : ""}
-        </>
+        props.subtitle ? (
+          props.subtitle
+        ) : (
+          <>
+            {props.attendeeCancelled
+              ? t("attendee_no_longer_attending_subtitle", { name: props.attendee.name })
+              : ""}
+          </>
+        )
       }
+      reassigned={props.reassigned}
       {...props}
+      attendee={attendee}
     />
   );
 };

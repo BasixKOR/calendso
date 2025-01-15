@@ -1,21 +1,7 @@
-import type { GetStaticPropsContext } from "next";
+import withEmbedSsr from "@lib/withEmbedSsr";
 
-import { getStaticProps as _getStaticProps } from "../[type]";
+import { getServerSideProps as _getServerSideProps } from "@server/lib/[user]/[type]/getServerSideProps";
 
-export { getStaticPaths } from "../[type]";
+export const getServerSideProps = withEmbedSsr(_getServerSideProps);
 
-export { default } from "../[type]";
-
-export const getStaticProps = async (context: GetStaticPropsContext) => {
-  const staticResponse = await _getStaticProps(context);
-  if (staticResponse.notFound) {
-    return staticResponse;
-  }
-  return {
-    ...staticResponse,
-    props: {
-      ...staticResponse.props,
-      isEmbed: true,
-    },
-  };
-};
+export { default } from "./index";

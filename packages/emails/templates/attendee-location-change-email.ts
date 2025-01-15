@@ -1,13 +1,15 @@
 import { renderEmail } from "../";
+import generateIcsFile, { GenerateIcsRole } from "../lib/generateIcsFile";
 import AttendeeScheduledEmail from "./attendee-scheduled-email";
 
 export default class AttendeeLocationChangeEmail extends AttendeeScheduledEmail {
-  protected getNodeMailerPayload(): Record<string, unknown> {
+  protected async getNodeMailerPayload(): Promise<Record<string, unknown>> {
     return {
-      icalEvent: {
-        filename: "event.ics",
-        content: this.getiCalEventAsString(),
-      },
+      icalEvent: generateIcsFile({
+        calEvent: this.calEvent,
+        role: GenerateIcsRole.ATTENDEE,
+        status: "CONFIRMED",
+      }),
       to: `${this.attendee.name} <${this.attendee.email}>`,
       from: `${this.calEvent.organizer.name} <${this.getMailerOptions().from}>`,
       replyTo: this.calEvent.organizer.email,
@@ -16,7 +18,7 @@ export default class AttendeeLocationChangeEmail extends AttendeeScheduledEmail 
         name: this.calEvent.team?.name || this.calEvent.organizer.name,
         date: this.getFormattedDate(),
       })}`,
-      html: renderEmail("AttendeeLocationChangeEmail", {
+      html: await renderEmail("AttendeeLocationChangeEmail", {
         calEvent: this.calEvent,
         attendee: this.attendee,
       }),

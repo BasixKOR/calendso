@@ -3,17 +3,18 @@ import type { App_RoutingForms_Form } from "@prisma/client";
 import { BaseEmailHtml, Info } from "@calcom/emails/src/components";
 import { WEBAPP_URL } from "@calcom/lib/constants";
 
-import type { Response } from "../../types/types";
+import type { Fields, OrderedResponses } from "../../types/types";
 
 export const ResponseEmail = ({
   form,
-  response,
+  orderedResponses,
   ...props
 }: {
-  form: Pick<App_RoutingForms_Form, "id" | "name">;
-  response: Response;
+  form: Pick<App_RoutingForms_Form, "id" | "name" | "fields">;
+  orderedResponses: OrderedResponses;
   subject: string;
 } & Partial<React.ComponentProps<typeof BaseEmailHtml>>) => {
+  const formFields = form.fields as Fields;
   return (
     <BaseEmailHtml
       callToAction={
@@ -27,7 +28,7 @@ export const ResponseEmail = ({
             color: "#3e3e3e",
           }}>
           <p style={{ fontWeight: 400, lineHeight: "24px" }}>
-            <a href={`${WEBAPP_URL}/apps/routing-forms/form-edit/${form.id}`} style={{ color: "#3e3e3e" }}>
+            <a href={`${WEBAPP_URL}/routing-forms/form-edit/${form.id}`} style={{ color: "#3e3e3e" }}>
               <>Manage this form</>
             </a>
           </p>
@@ -36,17 +37,16 @@ export const ResponseEmail = ({
       title={form.name}
       subtitle="New Response Received"
       {...props}>
-      {Object.entries(response).map(([fieldId, fieldResponse]) => {
-        return (
-          <Info
-            withSpacer
-            key={fieldId}
-            label={fieldResponse.label}
-            description={
-              fieldResponse.value instanceof Array ? fieldResponse.value.join(",") : fieldResponse.value
-            }
-          />
-        );
+      {orderedResponses.map((fieldResponse, index) => {
+        const field = formFields?.find((f) => f.label === fieldResponse.label);
+        const description =
+          fieldResponse.value instanceof Array
+            ? fieldResponse.value
+                .map((id) => field?.options?.find((opt) => opt.id === id)?.label || id)
+                .join(", ")
+            : field?.options?.find((opt) => opt.id === fieldResponse.value)?.label || fieldResponse.value;
+
+        return <Info withSpacer key={index} label={fieldResponse.label} description={description} />;
       })}
     </BaseEmailHtml>
   );

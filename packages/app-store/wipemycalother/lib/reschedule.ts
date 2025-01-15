@@ -1,20 +1,23 @@
 import type { Booking, BookingReference, User } from "@prisma/client";
-import { BookingStatus } from "@prisma/client";
 import type { TFunction } from "next-i18next";
 
 import { CalendarEventBuilder } from "@calcom/core/builders/CalendarEvent/builder";
 import { CalendarEventDirector } from "@calcom/core/builders/CalendarEvent/director";
 import { deleteMeeting } from "@calcom/core/videoClient";
 import dayjs from "@calcom/dayjs";
-import { sendRequestRescheduleEmail } from "@calcom/emails";
+import { sendRequestRescheduleEmailAndSMS } from "@calcom/emails";
 import logger from "@calcom/lib/logger";
 import { getTranslation } from "@calcom/lib/server/i18n";
 import prisma from "@calcom/prisma";
+import { BookingStatus } from "@calcom/prisma/enums";
+import type { EventTypeMetadata } from "@calcom/prisma/zod-utils";
 import type { Person } from "@calcom/types/Calendar";
 
 import { getCalendar } from "../../_utils/getCalendar";
 
-type PersonAttendeeCommonFields = Pick<User, "id" | "email" | "name" | "locale" | "timeZone" | "username">;
+type PersonAttendeeCommonFields = Pick<User, "id" | "email" | "name" | "locale" | "timeZone" | "username"> & {
+  phoneNumber?: string | null;
+};
 
 const Reschedule = async (bookingUid: string, cancellationReason: string) => {
   const bookingToReschedule = await prisma.booking.findFirstOrThrow({
@@ -29,6 +32,17 @@ const Reschedule = async (bookingUid: string, cancellationReason: string) => {
       location: true,
       attendees: true,
       references: true,
+      eventType: {
+        select: {
+          metadata: true,
+          team: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      },
       user: {
         select: {
           id: true,
@@ -57,7 +71,6 @@ const Reschedule = async (bookingUid: string, cancellationReason: string) => {
     const event = await prisma.eventType.findFirstOrThrow({
       select: {
         title: true,
-        users: true,
         schedulingType: true,
       },
       where: {
@@ -89,6 +102,7 @@ const Reschedule = async (bookingUid: string, cancellationReason: string) => {
           username: user?.username || "",
           language: { translate: selectedLanguage, locale: user.locale || "en" },
           timeZone: user?.timeZone,
+          phoneNumber: user?.phoneNumber,
         };
       });
     };
@@ -106,6 +120,13 @@ const Reschedule = async (bookingUid: string, cancellationReason: string) => {
         tAttendees
       ),
       organizer: userOwnerAsPeopleType,
+      team: !!bookingToReschedule.eventType?.team
+        ? {
+            name: bookingToReschedule.eventType.team.name,
+            id: bookingToReschedule.eventType.team.id,
+            members: [],
+          }
+        : undefined,
     });
     const director = new CalendarEventDirector();
     director.setBuilder(builder);
@@ -121,17 +142,19 @@ const Reschedule = async (bookingUid: string, cancellationReason: string) => {
     const bookingRefsFiltered: BookingReference[] = bookingToReschedule.references.filter(
       (ref) => !!credentialsMap.get(ref.type)
     );
+
+    const promises = bookingRefsFiltered.map(async (bookingRef) => {
+      if (!bookingRef.uid) return;
+
+      if (bookingRef.type.endsWith("_calendar")) {
+        const calendar = await getCalendar(credentialsMap.get(bookingRef.type));
+        return calendar?.deleteEvent(bookingRef.uid, builder.calendarEvent);
+      } else if (bookingRef.type.endsWith("_video")) {
+        return deleteMeeting(credentialsMap.get(bookingRef.type), bookingRef.uid);
+      }
+    });
     try {
-      bookingRefsFiltered.forEach((bookingRef) => {
-        if (bookingRef.uid) {
-          if (bookingRef.type.endsWith("_calendar")) {
-            const calendar = getCalendar(credentialsMap.get(bookingRef.type));
-            return calendar?.deleteEvent(bookingRef.uid, builder.calendarEvent);
-          } else if (bookingRef.type.endsWith("_video")) {
-            return deleteMeeting(credentialsMap.get(bookingRef.type), bookingRef.uid);
-          }
-        }
-      });
+      await Promise.all(promises);
     } catch (error) {
       if (error instanceof Error) {
         logger.error(error.message);
@@ -140,9 +163,13 @@ const Reschedule = async (bookingUid: string, cancellationReason: string) => {
 
     // Send emails
     try {
-      await sendRequestRescheduleEmail(builder.calendarEvent, {
-        rescheduleLink: builder.rescheduleLink,
-      });
+      await sendRequestRescheduleEmailAndSMS(
+        builder.calendarEvent,
+        {
+          rescheduleLink: builder.rescheduleLink,
+        },
+        bookingToReschedule?.eventType?.metadata as EventTypeMetadata
+      );
     } catch (error) {
       if (error instanceof Error) {
         logger.error(error.message);

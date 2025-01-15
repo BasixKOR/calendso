@@ -1,4 +1,4 @@
-import { MembershipRole } from "@prisma/client";
+import type { MembershipRole } from "@calcom/prisma/enums";
 
 export interface NewTeamFormValues {
   name: string;
@@ -13,6 +13,6 @@ export interface PendingMember {
   id?: number;
   username: string | null;
   role: MembershipRole;
-  avatar: string | null;
+  avatarUrl?: string | null;
   sendInviteEmail?: boolean;
 }

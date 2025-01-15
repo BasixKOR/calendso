@@ -6,18 +6,23 @@ import { z } from "zod";
 import type { EventLocationType } from "@calcom/app-store/locations";
 import { getEventLocationType } from "@calcom/app-store/locations";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
-import { trpc } from "@calcom/trpc/react";
 import {
-  showToast,
-  Dialog,
-  DialogContent,
-  Form,
-  TextField,
-  DialogFooter,
   Button,
+  Dialog,
   DialogClose,
+  DialogContent,
+  DialogFooter,
+  Form,
+  showToast,
+  TextField,
 } from "@calcom/ui";
-import { FiAlertCircle } from "@calcom/ui/components/icon";
+
+export type UpdateUsersDefaultConferencingAppParams = {
+  appSlug: string;
+  appLink?: string;
+  onSuccessCallback: () => void;
+  onErrorCallback: () => void;
+};
 
 type LocationTypeSetLinkDialogFormProps = {
   link?: string;
@@ -28,10 +33,12 @@ export function AppSetDefaultLinkDialog({
   locationType,
   setLocationType,
   onSuccess,
+  handleUpdateUserDefaultConferencingApp,
 }: {
   locationType: EventLocationType & { slug: string };
   setLocationType: Dispatch<SetStateAction<(EventLocationType & { slug: string }) | undefined>>;
   onSuccess: () => void;
+  handleUpdateUserDefaultConferencingApp: (params: UpdateUsersDefaultConferencingAppParams) => void;
 }) {
   const { t } = useLocale();
   const eventLocationTypeOptions = getEventLocationType(locationType.type);
@@ -42,28 +49,25 @@ export function AppSetDefaultLinkDialog({
     ),
   });
 
-  const updateDefaultAppMutation = trpc.viewer.updateUserDefaultConferencingApp.useMutation({
-    onSuccess: () => {
-      onSuccess();
-    },
-    onError: () => {
-      showToast(`Invalid App Link Format`, "error");
-    },
-  });
-
   return (
     <Dialog open={!!locationType} onOpenChange={() => setLocationType(undefined)}>
       <DialogContent
         title={t("default_app_link_title")}
         description={t("default_app_link_description")}
         type="creation"
-        Icon={FiAlertCircle}>
+        Icon="circle-alert">
         <Form
           form={form}
           handleSubmit={(values) => {
-            updateDefaultAppMutation.mutate({
+            handleUpdateUserDefaultConferencingApp({
               appSlug: locationType.slug,
               appLink: values.link,
+              onSuccessCallback: () => {
+                onSuccess();
+              },
+              onErrorCallback: () => {
+                showToast(`Invalid App Link Format`, "error");
+              },
             });
             setLocationType(undefined);
           }}>
@@ -76,11 +80,11 @@ export function AppSetDefaultLinkDialog({
               label={locationType.label ?? ""}
             />
 
-            <DialogFooter>
+            <DialogFooter showDivider className="mt-8">
+              <DialogClose />
               <Button color="primary" type="submit">
                 {t("save")}
               </Button>
-              <DialogClose />
             </DialogFooter>
           </>
         </Form>

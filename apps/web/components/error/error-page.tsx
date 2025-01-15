@@ -1,6 +1,9 @@
+"use client";
+
 import React from "react";
 
-import { HttpError } from "@lib/core/http/error";
+import { HttpError } from "@calcom/lib/http-error";
+import { Button } from "@calcom/ui";
 
 type Props = {
   statusCode?: number | null;
@@ -29,15 +32,15 @@ const ErrorDebugPanel: React.FC<{ error: Props["error"]; children?: never }> = (
   ];
 
   return (
-    <div className="overflow-hidden bg-white shadow sm:rounded-lg">
-      <div className="border-t border-gray-200 px-4 py-5 sm:p-0">
-        <dl className="sm:divide-y sm:divide-gray-200">
+    <div className="bg-default overflow-hidden shadow sm:rounded-lg">
+      <div className="border-subtle border-t px-4 py-5 sm:p-0">
+        <dl className="sm:divide-subtle sm:divide-y">
           {debugMap.map(([key, value]) => {
             if (value !== undefined) {
               return (
-                <div key={key} className="py-4 sm:grid sm:grid-cols-3 sm:gap-4 sm:py-5 sm:px-6">
-                  <dt className="text-sm font-bold text-black">{key}</dt>
-                  <dd className="mt-1 text-sm text-black sm:col-span-2 sm:mt-0">{value}</dd>
+                <div key={key} className="py-4 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6 sm:py-5">
+                  <dt className="text-emphasis text-sm font-bold">{key}</dt>
+                  <dd className="text-emphasis mt-1 text-sm sm:col-span-2 sm:mt-0">{value}</dd>
                 </div>
               );
             }
@@ -53,21 +56,37 @@ export const ErrorPage: React.FC<Props> = (props) => {
 
   return (
     <>
-      <div className="min-h-screen bg-white px-4">
-        <main className="mx-auto max-w-xl pb-6 pt-16 sm:pt-24">
-          <div className="text-center">
-            <p className="text-sm font-semibold uppercase tracking-wide text-black">{statusCode}</p>
-            <h1 className="mt-2 text-4xl font-extrabold tracking-tight text-gray-900 sm:text-5xl">
+      <div className="bg-subtle flex h-screen">
+        <div className="rtl: bg-default m-auto rounded-md p-10 text-right ltr:text-left">
+          <h1 className="font-cal text-emphasis text-6xl">{statusCode}</h1>
+          <h2 className="text-emphasis mt-6 max-w-2xl text-2xl font-medium">
+            It&apos;s not you, it&apos;s us.
+          </h2>
+          <p className="text-default mb-6 mt-4 max-w-2xl text-sm">
+            Something went wrong on our end. Get in touch with our support team, and we&apos;ll get it fixed
+            right away for you.
+          </p>
+
+          <div className="mb-8 flex flex-col">
+            <p className="text-default mb-4 max-w-2xl text-sm">
+              Please provide the following text when contacting support to better help you:
+            </p>
+            <pre className="bg-emphasis text-emphasis w-full max-w-2xl whitespace-normal break-words rounded-md p-4">
               {message}
-            </h1>
+            </pre>
           </div>
-        </main>
-        {displayDebug && (
-          <div className="flex-wrap">
-            <ErrorDebugPanel error={error} />
-          </div>
-        )}
+
+          <Button href="mailto:support@cal.com">Contact Support</Button>
+          <Button color="secondary" href="javascript:history.back()" className="ml-2">
+            Go back
+          </Button>
+        </div>
       </div>
+      {displayDebug && (
+        <div className="flex-wrap">
+          <ErrorDebugPanel error={error} />
+        </div>
+      )}
     </>
   );
 };

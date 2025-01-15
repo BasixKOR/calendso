@@ -1,9 +1,14 @@
+/**
+ * @deprecated
+ * This file is deprecated. The only use of this file is to seed the database for E2E tests. Each test should take care of seeding it's own data going forward.
+ */
 import type { Prisma } from "@prisma/client";
 import dotEnv from "dotenv";
-import fs from "fs";
-import path from "path";
+
+import { appStoreMetadata } from "@calcom/app-store/appStoreMetaData";
 
 import prisma from ".";
+import { AppCategories } from "./enums";
 
 dotEnv.config({ path: "../../.env.appStore" });
 
@@ -34,6 +39,7 @@ async function seedAppData() {
     return;
   }
 
+  const multiSelectLegacyFieldId = "d2292635-9f12-17b1-9153-c3a854649182";
   await prisma.app_RoutingForms_Form.create({
     data: {
       id: seededForm.id,
@@ -48,7 +54,7 @@ async function seedAppData() {
               "8988bbb8-0123-4456-b89a-b1823f70c5ff": {
                 type: "rule",
                 properties: {
-                  field: "c4296635-9f12-47b1-8153-c3a854649182",
+                  field: "c1296635-9f12-47b1-8153-c3a854649182",
                   value: ["event-routing"],
                   operator: "equal",
                   valueSrc: ["value"],
@@ -68,7 +74,7 @@ async function seedAppData() {
               "b99b8a89-89ab-4cde-b012-31823f718ff5": {
                 type: "rule",
                 properties: {
-                  field: "c4296635-9f12-47b1-8153-c3a854649182",
+                  field: "c1296635-9f12-47b1-8153-c3a854649182",
                   value: ["custom-page"],
                   operator: "equal",
                   valueSrc: ["value"],
@@ -80,7 +86,7 @@ async function seedAppData() {
         },
         {
           id: "a8ba9aab-4567-489a-bcde-f1823f71b4ad",
-          action: { type: "externalRedirectUrl", value: "https://google.com" },
+          action: { type: "externalRedirectUrl", value: "https://cal.com" },
           queryValue: {
             id: "a8ba9aab-4567-489a-bcde-f1823f71b4ad",
             type: "group",
@@ -88,7 +94,7 @@ async function seedAppData() {
               "998b9b9a-0123-4456-b89a-b1823f7232b9": {
                 type: "rule",
                 properties: {
-                  field: "c4296635-9f12-47b1-8153-c3a854649182",
+                  field: "c1296635-9f12-47b1-8153-c3a854649182",
                   value: ["external-redirect"],
                   operator: "equal",
                   valueSrc: ["value"],
@@ -108,7 +114,7 @@ async function seedAppData() {
               "b98a8abb-cdef-4012-b456-718262343d27": {
                 type: "rule",
                 properties: {
-                  field: "d4292635-9f12-17b1-9153-c3a854649182",
+                  field: multiSelectLegacyFieldId,
                   value: [["Option-2"]],
                   operator: "multiselect_equals",
                   valueSrc: ["value"],
@@ -126,19 +132,39 @@ async function seedAppData() {
         },
       ],
       fields: [
-        { id: "c4296635-9f12-47b1-8153-c3a854649182", type: "text", label: "Test field", required: true },
+        { id: "c1296635-9f12-47b1-8153-c3a854649182", type: "text", label: "Test field", required: true },
         {
-          id: "d4292635-9f12-17b1-9153-c3a854649182",
+          id: multiSelectLegacyFieldId,
+          type: "multiselect",
+          label: "Multi Select(with legacy `selectText`)",
+          identifier: "multi",
+          selectText: "Option-1\nOption-2",
+          required: false,
+        },
+        {
+          id: "d3292635-9f12-17b1-9153-c3a854649182",
           type: "multiselect",
           label: "Multi Select",
           identifier: "multi",
-          selectText: "Option-1\nOption-2",
+          options: [
+            {
+              id: "d1234635-9f12-17b1-9153-c3a854649182",
+              label: "Option-1",
+            },
+            {
+              id: "d1235635-9f12-17b1-9153-c3a854649182",
+              label: "Option-2",
+            },
+          ],
           required: false,
         },
       ],
       user: {
         connect: {
-          username: "pro",
+          email_username: {
+            username: "pro",
+            email: "pro@example.com",
+          },
         },
       },
       name: seededForm.name,
@@ -157,21 +183,78 @@ async function createApp(
   keys?: Prisma.AppCreateInput["keys"],
   isTemplate?: boolean
 ) {
-  await prisma.app.upsert({
-    where: { slug },
-    create: { slug, dirName, categories, keys, enabled: true },
-    update: { dirName, categories, keys, enabled: true },
-  });
-  await prisma.credential.updateMany({
-    where: { type },
-    data: { appId: slug },
-  });
-  console.log(`📲 Upserted ${isTemplate ? "template" : "app"}: '${slug}'`);
+  try {
+    const foundApp = await prisma.app.findFirst({
+      /**
+       * slug and dirName both are unique and any of them can be used to find the app uniquely
+       * Using both here allows us to rename(after the app has been seeded already) `slug` or `dirName` while still finding the app to apply the change on.
+       * Note: dirName is legacy and it is same as slug for all apps created through App-Store Cli.
+       * - Take the case there was an app with slug `myvideo` and dirName `dirName-1` and that got seeded. Now, someone wants to rename the slug to `my-video`(more readable) for the app keeping dirName same.
+       *    This would make this fn to be called with slug `my-video` and dirName `dirName-1`.
+       *    Now, we can find the app because dirName would still match.
+       * - Similar, if someone changes dirName keeping slug same, we can find the app because slug would still match.
+       * - If both dirName and slug are changed, it will be added as a new entry in the DB.
+       */
+      where: {
+        OR: [
+          {
+            slug,
+          },
+          {
+            dirName,
+          },
+        ],
+      },
+    });
+
+    // We need to enable seeded apps as they are used in tests.
+    const data = { slug, dirName, categories, keys, enabled: true };
+
+    if (!foundApp) {
+      await prisma.app.create({
+        data,
+      });
+      console.log(`📲 Created ${isTemplate ? "template" : "app"}: '${slug}'`);
+    } else {
+      // We know that the app exists, so either it would have the same slug or dirName
+      // Because update query can't have both slug and dirName, try to find the app to update by slug and dirName one by one
+      // if there would have been a unique App.uuid, that never changes, we could have used that in update query.
+      await prisma.app.update({
+        where: { slug: foundApp.slug },
+        data,
+      });
+      await prisma.app.update({
+        where: { dirName: foundApp.dirName },
+        data,
+      });
+      console.log(`📲 Updated ${isTemplate ? "template" : "app"}: '${slug}'`);
+    }
+
+    await prisma.credential.updateMany({
+      // Credential should stop using type and instead use an App.uuid to refer to app deterministically. That uuid would never change even if slug/dirName changes.
+      // This would allow credentials to be not orphaned when slug(appId) changes.
+      where: { type },
+      data: { appId: slug },
+    });
+  } catch (e) {
+    console.log(`Could not upsert app: ${slug}. Error:`, e);
+  }
 }
 
 export default async function main() {
   // Calendar apps
   await createApp("apple-calendar", "applecalendar", ["calendar"], "apple_calendar");
+  if (
+    process.env.BASECAMP3_CLIENT_ID &&
+    process.env.BASECAMP3_CLIENT_SECRET &&
+    process.env.BASECAMP3_USER_AGENT
+  ) {
+    await createApp("basecamp3", "basecamp3", ["other"], "basecamp3_other", {
+      client_id: process.env.BASECAMP3_CLIENT_ID,
+      client_secret: process.env.BASECAMP3_CLIENT_SECRET,
+      user_agent: process.env.BASECAMP3_USER_AGENT,
+    });
+  }
   await createApp("caldav-calendar", "caldavcalendar", ["calendar"], "caldav_calendar");
   try {
     const { client_secret, client_id, redirect_uris } = JSON.parse(
@@ -182,7 +265,7 @@ export default async function main() {
       client_secret,
       redirect_uris,
     });
-    await createApp("google-meet", "googlevideo", ["video"], "google_video", {
+    await createApp("google-meet", "googlevideo", ["conferencing"], "google_video", {
       client_id,
       client_secret,
       redirect_uris,
@@ -195,7 +278,7 @@ export default async function main() {
       client_id: process.env.MS_GRAPH_CLIENT_ID,
       client_secret: process.env.MS_GRAPH_CLIENT_SECRET,
     });
-    await createApp("msteams", "office365video", ["video"], "office365_video", {
+    await createApp("msteams", "office365video", ["conferencing"], "office365_video", {
       client_id: process.env.MS_GRAPH_CLIENT_ID,
       client_secret: process.env.MS_GRAPH_CLIENT_SECRET,
     });
@@ -213,45 +296,46 @@ export default async function main() {
   }
   // Video apps
   if (process.env.DAILY_API_KEY) {
-    await createApp("daily-video", "dailyvideo", ["video"], "daily_video", {
+    await createApp("daily-video", "dailyvideo", ["conferencing"], "daily_video", {
       api_key: process.env.DAILY_API_KEY,
       scale_plan: process.env.DAILY_SCALE_PLAN,
     });
   }
   if (process.env.TANDEM_CLIENT_ID && process.env.TANDEM_CLIENT_SECRET) {
-    await createApp("tandem", "tandemvideo", ["video"], "tandem_video", {
+    await createApp("tandem", "tandemvideo", ["conferencing"], "tandem_video", {
       client_id: process.env.TANDEM_CLIENT_ID as string,
       client_secret: process.env.TANDEM_CLIENT_SECRET as string,
       base_url: (process.env.TANDEM_BASE_URL as string) || "https://tandem.chat",
     });
   }
   if (process.env.ZOOM_CLIENT_ID && process.env.ZOOM_CLIENT_SECRET) {
-    await createApp("zoom", "zoomvideo", ["video"], "zoom_video", {
+    await createApp("zoom", "zoomvideo", ["conferencing"], "zoom_video", {
       client_id: process.env.ZOOM_CLIENT_ID,
       client_secret: process.env.ZOOM_CLIENT_SECRET,
     });
   }
-  await createApp("jitsi", "jitsivideo", ["video"], "jitsi_video");
+  await createApp("jitsi", "jitsivideo", ["conferencing"], "jitsi_video");
   // Other apps
   if (process.env.HUBSPOT_CLIENT_ID && process.env.HUBSPOT_CLIENT_SECRET) {
-    await createApp("hubspot", "hubspot", ["other"], "hubspot_other_calendar", {
+    await createApp("hubspot", "hubspot", ["crm"], "hubspot_other_calendar", {
       client_id: process.env.HUBSPOT_CLIENT_ID,
       client_secret: process.env.HUBSPOT_CLIENT_SECRET,
     });
   }
   if (process.env.SALESFORCE_CONSUMER_KEY && process.env.SALESFORCE_CONSUMER_SECRET) {
-    await createApp("salesforce", "salesforce", ["other"], "salesforce_other_calendar", {
+    await createApp("salesforce", "salesforce", ["crm"], "salesforce_other_calendar", {
       consumer_key: process.env.SALESFORCE_CONSUMER_KEY,
       consumer_secret: process.env.SALESFORCE_CONSUMER_SECRET,
     });
   }
   if (process.env.ZOHOCRM_CLIENT_ID && process.env.ZOHOCRM_CLIENT_SECRET) {
-    await createApp("zohocrm", "zohocrm", ["other"], "zohocrm_other_calendar", {
+    await createApp("zohocrm", "zohocrm", ["crm"], "zohocrm_other_calendar", {
       client_id: process.env.ZOHOCRM_CLIENT_ID,
       client_secret: process.env.ZOHOCRM_CLIENT_SECRET,
     });
   }
-  await createApp("wipe-my-cal", "wipemycalother", ["other"], "wipemycal_other");
+
+  await createApp("wipe-my-cal", "wipemycalother", ["automation"], "wipemycal_other");
   if (process.env.GIPHY_API_KEY) {
     await createApp("giphy", "giphy", ["other"], "giphy_other", {
       api_key: process.env.GIPHY_API_KEY,
@@ -259,7 +343,7 @@ export default async function main() {
   }
 
   if (process.env.VITAL_API_KEY && process.env.VITAL_WEBHOOK_SECRET) {
-    await createApp("vital-automation", "vital", ["other"], "vital_other", {
+    await createApp("vital-automation", "vital", ["automation"], "vital_other", {
       mode: process.env.VITAL_DEVELOPMENT_MODE || "sandbox",
       region: process.env.VITAL_REGION || "us",
       api_key: process.env.VITAL_API_KEY,
@@ -272,9 +356,15 @@ export default async function main() {
       invite_link: process.env.ZAPIER_INVITE_LINK,
     });
   }
+  await createApp("make", "make", ["automation"], "make_automation", {
+    invite_link: "https://make.com/en/hq/app-invitation/6cb2772b61966508dd8f414ba3b44510",
+  });
 
-  // Web3 apps
-  await createApp("huddle01", "huddle01video", ["web3", "video"], "huddle01_video");
+  if (process.env.HUDDLE01_API_TOKEN) {
+    await createApp("huddle01", "huddle01video", ["conferencing"], "huddle01_video", {
+      apiKey: process.env.HUDDLE01_API_TOKEN,
+    });
+  }
 
   // Payment apps
   if (
@@ -295,21 +385,29 @@ export default async function main() {
     });
   }
 
-  const generatedApps = JSON.parse(
-    fs.readFileSync(path.join(__dirname, "seed-app-store.config.json"), "utf8")
-  );
-  for (let i = 0; i < generatedApps.length; i++) {
-    const generatedApp = generatedApps[i];
-    if (generatedApp.isTemplate && process.argv[2] !== "seed-templates") {
+  if (process.env.CLOSECOM_CLIENT_ID && process.env.CLOSECOM_CLIENT_SECRET) {
+    await createApp("closecom", "closecom", ["crm"], "closecom_crm", {
+      client_id: process.env.CLOSECOM_CLIENT_ID,
+      client_secret: process.env.CLOSECOM_CLIENT_SECRET,
+    });
+  }
+
+  for (const [, app] of Object.entries(appStoreMetadata)) {
+    if (app.isTemplate && process.argv[2] !== "seed-templates") {
       continue;
     }
+
+    const validatedCategories = app.categories.filter(
+      (category): category is AppCategories => category in AppCategories
+    );
+
     await createApp(
-      generatedApp.slug,
-      generatedApp.dirName,
-      generatedApp.categories,
-      generatedApp.type,
+      app.slug,
+      app.dirName ?? app.slug,
+      validatedCategories,
+      app.type,
       undefined,
-      generatedApp.isTemplate
+      app.isTemplate
     );
   }
 

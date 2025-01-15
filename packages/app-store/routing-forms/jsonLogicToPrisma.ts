@@ -43,6 +43,22 @@ const OPERATOR_MAP = {
     operator: "NOT.equals",
     secondaryOperand: "",
   },
+  ">": {
+    operator: "gt",
+    secondaryOperand: null,
+  },
+  ">=": {
+    operator: "gte",
+    secondaryOperand: null,
+  },
+  "<": {
+    operator: "lt",
+    secondaryOperand: null,
+  },
+  "<=": {
+    operator: "lte",
+    secondaryOperand: null,
+  },
   all: {
     operator: "array_contains",
     secondaryOperand: null,
@@ -58,6 +74,19 @@ const GROUP_OPERATOR_MAP = {
   "!": "NOT",
 } as const;
 
+const NumberOperators = [">", ">=", "<", "<="];
+
+const negatePrismaWhereClauseIfNeeded = (data: any, isNegation: boolean) => {
+  if (!isNegation) {
+    return data;
+  }
+  return {
+    NOT: {
+      ...data,
+    },
+  };
+};
+
 const convertSingleQueryToPrismaWhereClause = (
   operatorName: keyof typeof OPERATOR_MAP,
   logicData: LogicData,
@@ -70,23 +99,102 @@ const convertSingleQueryToPrismaWhereClause = (
   const operands =
     logicData[operatorName] instanceof Array ? logicData[operatorName] : [logicData[operatorName]];
 
-  const mainOperand = operatorName !== "in" ? operands[0].var : operands[1].var;
-  let secondaryOperand = staticSecondaryOperand || (operatorName !== "in" ? operands[1] : operands[0]) || "";
-  if (operatorName === "all") {
-    secondaryOperand = secondaryOperand.in[1];
-  }
-  const prismaWhere = {
-    response: { path: [mainOperand, "value"], [`${prismaOperator}`]: secondaryOperand },
-  };
+  if (operatorName === "in" && operands[0]?.var && Array.isArray(operands[1])) {
+    // Case A: Item "in" array
+    // operands[0]: { var: ... }
+    // operands[1]: items to test against
 
-  if (isNegation) {
-    return {
-      NOT: {
-        ...prismaWhere,
+    // Convert 'in' operator to union of OR clauses
+    return negatePrismaWhereClauseIfNeeded(
+      {
+        OR: (operands[1] ?? []).map((value) => ({
+          response: {
+            path: [operands[0].var, "value"],
+            [`${OPERATOR_MAP["=="].operator}`]: value,
+          },
+        })),
       },
-    };
+      isNegation
+    );
   }
-  return prismaWhere;
+
+  if (operatorName === "in" && typeof operands[0] === "string" && operands[1]?.var) {
+    // Case B: String "in" string
+    // operands[0]: string to test against
+    // operands[1]: { var: ... }
+
+    return negatePrismaWhereClauseIfNeeded(
+      {
+        response: {
+          path: [operands[1].var, "value"],
+          [`${prismaOperator}`]: operands[0],
+        },
+      },
+      isNegation
+    );
+  }
+
+  const mainOperand = operands[0].var;
+  let secondaryOperand;
+
+  if (operatorName === "all") {
+    secondaryOperand = operands[1].in[1];
+  } else {
+    secondaryOperand = staticSecondaryOperand || operands[1] || "";
+  }
+
+  const isNumberOperator = NumberOperators.includes(operatorName);
+  const secondaryOperandAsNumber = typeof secondaryOperand === "string" ? Number(secondaryOperand) : null;
+
+  if (secondaryOperandAsNumber && isNumberOperator) {
+    // We know that it's number operator so Prisma should query number
+    // Note that if we get string values in DB(e.g. '100'), those values can't be filtered with number operators.
+    return negatePrismaWhereClauseIfNeeded(
+      {
+        response: {
+          path: [mainOperand, "value"],
+          [`${prismaOperator}`]: secondaryOperandAsNumber,
+        },
+      },
+      isNegation
+    );
+  }
+
+  if (secondaryOperandAsNumber && !isNumberOperator) {
+    // We know that it's not number operator but the input field might have been a number and thus stored value in DB as number.
+    // Also, even for input type=number we might accidentally get string value(e.g. '100'). So, let reporting do it's best job with both number and string.
+    return negatePrismaWhereClauseIfNeeded(
+      {
+        OR: [
+          {
+            response: {
+              path: [mainOperand, "value"],
+              // Query as string e.g. equals '100'
+              [`${prismaOperator}`]: secondaryOperand,
+            },
+          },
+          {
+            response: {
+              path: [mainOperand, "value"],
+              // Query as number e.g. equals 100
+              [`${prismaOperator}`]: secondaryOperandAsNumber,
+            },
+          },
+        ],
+      },
+      isNegation
+    );
+  }
+
+  return negatePrismaWhereClauseIfNeeded(
+    {
+      response: {
+        path: [mainOperand, "value"],
+        [`${prismaOperator}`]: secondaryOperand,
+      },
+    },
+    isNegation
+  );
 };
 
 const isNegation = (logicData: LogicData | NegatedLogicData) => {

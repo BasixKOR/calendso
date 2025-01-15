@@ -3,14 +3,15 @@
   "title": "Microsoft Exchange",
   "name": "Microsoft Exchange",
   "slug": "exchange",
+  "dirName": "exchangecalendar",
   "type": "exchange_calendar",
-  "imageSrc": "/api/app-store/exchangecalendar/icon.svg",
-  "logo": "/api/app-store/exchangecalendar/icon.svg",
-  "url": "https://cal.com/apps/exchange",
+  "logo": "icon.svg",
+  "url": "https://cal.com",
   "variant": "calendar",
   "categories": ["calendar"],
   "publisher": "Cal.com",
   "email": "help@cal.com",
   "description": "Fetch Microsoft Exchange calendars and availabilities using Exchange Web Services (EWS).",
-  "__createdUsingCli": true
+  "__createdUsingCli": true,
+  "isOAuth": false
 }

@@ -1,7 +1,9 @@
 import { faker } from "@faker-js/faker";
-import type { Booking, EventType, Prisma, Webhook } from "@prisma/client";
-import { BookingStatus } from "@prisma/client";
+import type { Booking, EventType, Prisma, Webhook, BookingReference } from "@prisma/client";
+import type { TFunction } from "next-i18next";
 
+import getICalUID from "@calcom/emails/lib/getICalUID";
+import { BookingStatus } from "@calcom/prisma/enums";
 import type { CalendarEvent, Person, VideoCallData } from "@calcom/types/Calendar";
 
 export const buildVideoCallData = (callData?: Partial<VideoCallData>): VideoCallData => {
@@ -23,18 +25,23 @@ export const buildPerson = (person?: Partial<Person>): Person => {
     id: faker.datatype.number(),
     language: {
       locale: faker.random.locale(),
-      translate: (key: string) => key,
+      translate: ((key: string) => key) as TFunction,
     },
     ...person,
   };
 };
 
-export const buildBooking = (booking?: Partial<Booking>): Booking => {
+export const buildBooking = (
+  booking?: Partial<Booking> & { references?: Partial<BookingReference>[] }
+): Booking & { references?: Partial<BookingReference>[]; attendees?: [] } => {
+  const uid = faker.datatype.uuid();
   return {
     id: faker.datatype.number(),
-    uid: faker.datatype.uuid(),
+    uid,
     userId: null,
     eventTypeId: null,
+    idempotencyKey: null,
+    userPrimaryEmail: null,
     title: faker.lorem.sentence(),
     description: faker.lorem.paragraph(),
     customInputs: null,
@@ -46,7 +53,10 @@ export const buildBooking = (booking?: Partial<Booking>): Booking => {
     status: BookingStatus.ACCEPTED,
     paid: false,
     destinationCalendarId: null,
+    cancelledBy: null,
+    rescheduledBy: null,
     cancellationReason: null,
+    reassignReason: null,
     rejectionReason: null,
     dynamicEventSlugRef: null,
     dynamicGroupSlugRef: null,
@@ -54,9 +64,18 @@ export const buildBooking = (booking?: Partial<Booking>): Booking => {
     fromReschedule: null,
     recurringEventId: null,
     smsReminderNumber: null,
+    reassignById: null,
     scheduledJobs: [],
     metadata: null,
     responses: null,
+    isRecorded: false,
+    iCalUID: getICalUID({ uid }),
+    iCalSequence: 0,
+    rating: null,
+    noShowHost: null,
+    ratingFeedback: null,
+    attendees: [],
+    oneTimePassword: null,
     ...booking,
   };
 };
@@ -68,11 +87,18 @@ export const buildEventType = (eventType?: Partial<EventType>): EventType => {
     slug: faker.lorem.slug(),
     description: faker.lorem.paragraph(),
     position: 1,
+    isInstantEvent: false,
+    instantMeetingParameters: [],
+    instantMeetingExpiryTimeOffsetInSeconds: 90,
+    instantMeetingScheduleId: null,
     locations: null,
     length: 15,
+    offsetStart: 0,
     hidden: false,
     userId: null,
     teamId: null,
+    requiresBookerEmailVerification: false,
+    useEventTypeDestinationCalendarEmail: false,
     eventName: faker.lorem.words(),
     timeZone: null,
     periodType: "UNLIMITED",
@@ -81,24 +107,43 @@ export const buildEventType = (eventType?: Partial<EventType>): EventType => {
     periodDays: null,
     periodCountCalendarDays: null,
     recurringEvent: null,
+    lockTimeZoneToggleOnBookingPage: false,
     requiresConfirmation: false,
+    requiresConfirmationForFreeEmail: false,
+    requiresConfirmationWillBlockSlot: false,
     disableGuests: false,
     hideCalendarNotes: false,
+    hideCalendarEventDetails: false,
     minimumBookingNotice: 120,
     beforeEventBuffer: 0,
     afterEventBuffer: 0,
+    onlyShowFirstAvailableSlot: false,
     seatsPerTimeSlot: null,
     seatsShowAttendees: null,
+    seatsShowAvailabilityCount: null,
+    maxLeadThreshold: null,
     schedulingType: null,
     scheduleId: null,
     bookingLimits: null,
     durationLimits: null,
+    assignAllTeamMembers: false,
+    rescheduleWithSameRoundRobinHost: false,
     price: 0,
     currency: "usd",
     slotInterval: null,
     metadata: null,
     successRedirectUrl: null,
-    bookingFields: null,
+    forwardParamsSuccessRedirect: true,
+    bookingFields: [],
+    parentId: null,
+    profileId: null,
+    secondaryEmailId: null,
+    isRRWeightsEnabled: false,
+    eventTypeColor: null,
+    assignRRMembersUsingSegment: false,
+    rrSegmentQueryValue: null,
+    autoTranslateDescriptionEnabled: false,
+    useEventLevelSelectedCalendars: false,
     ...eventType,
   };
 };
@@ -115,7 +160,12 @@ export const buildWebhook = (webhook?: Partial<Webhook>): Webhook => {
     secret: faker.lorem.slug(),
     active: true,
     eventTriggers: [],
+    teamId: null,
+    platformOAuthClientId: null,
+    time: null,
+    timeUnit: null,
     ...webhook,
+    platform: false,
   };
 };
 
@@ -145,9 +195,14 @@ export const buildSubscriberEvent = (booking?: Partial<Booking>) => {
   };
 };
 
-export const buildCalendarEvent = (event?: Partial<CalendarEvent>): CalendarEvent => {
+export const buildCalendarEvent = (
+  event?: Partial<CalendarEvent>,
+  omitVideoCallData?: boolean
+): CalendarEvent => {
+  const uid = faker.datatype.uuid();
   return {
-    uid: faker.datatype.uuid(),
+    uid,
+    iCalUID: getICalUID({ uid }),
     type: faker.helpers.arrayElement(["event", "meeting"]),
     title: faker.lorem.sentence(),
     startTime: faker.date.future().toISOString(),
@@ -158,22 +213,67 @@ export const buildCalendarEvent = (event?: Partial<CalendarEvent>): CalendarEven
     customInputs: {},
     additionalNotes: faker.lorem.paragraph(),
     organizer: buildPerson(),
-    videoCallData: buildVideoCallData(),
+    ...(!omitVideoCallData && { videoCallData: buildVideoCallData() }),
     ...event,
   };
 };
 
 type UserPayload = Prisma.UserGetPayload<{
-  include: {
+  select: {
+    locked: true;
+    name: true;
+    email: true;
+    timeZone: true;
+    username: true;
+    id: true;
+    allowDynamicBooking: true;
     credentials: true;
     destinationCalendar: true;
     availability: true;
     selectedCalendars: true;
     schedules: true;
+    avatarUrl: true;
+    backupCodes: true;
+    bio: true;
+    brandColor: true;
+    completedOnboarding: true;
+    createdDate: true;
+    bufferTime: true;
+    darkBrandColor: true;
+    defaultScheduleId: true;
+    disableImpersonation: true;
+    emailVerified: true;
+    endTime: true;
+    hideBranding: true;
+    identityProvider: true;
+    identityProviderId: true;
+    invitedTo: true;
+    locale: true;
+    metadata: true;
+    role: true;
+    startTime: true;
+    theme: true;
+    appTheme: true;
+    timeFormat: true;
+    trialEndsAt: true;
+    twoFactorEnabled: true;
+    twoFactorSecret: true;
+    verified: true;
+    weekStart: true;
+    organizationId: true;
+    allowSEOIndexing: true;
+    receiveMonthlyDigestEmail: true;
+    movedToProfileId: true;
+    isPlatformManaged: true;
+    smsLockState: true;
   };
 }>;
-export const buildUser = <T extends Partial<UserPayload>>(user?: T): UserPayload => {
+export const buildUser = <T extends Partial<UserPayload>>(
+  user?: T & { priority?: number; weight?: number }
+): UserPayload & { priority: number; weight: number } => {
   return {
+    locked: false,
+    smsLockState: "UNLOCKED",
     name: faker.name.firstName(),
     email: faker.internet.email(),
     timeZone: faker.address.timeZone(),
@@ -181,8 +281,8 @@ export const buildUser = <T extends Partial<UserPayload>>(user?: T): UserPayload
     id: 0,
     allowDynamicBooking: true,
     availability: [],
-    avatar: "",
-    away: false,
+    avatarUrl: "",
+    backupCodes: null,
     bio: null,
     brandColor: "#292929",
     bufferTime: 0,
@@ -201,18 +301,25 @@ export const buildUser = <T extends Partial<UserPayload>>(user?: T): UserPayload
     invitedTo: null,
     locale: "en",
     metadata: null,
-    password: null,
     role: "USER",
     schedules: [],
     selectedCalendars: [],
     startTime: 0,
     theme: null,
+    appTheme: null,
     timeFormat: null,
     trialEndsAt: null,
     twoFactorEnabled: false,
     twoFactorSecret: null,
     verified: false,
     weekStart: "",
+    organizationId: null,
+    allowSEOIndexing: null,
+    receiveMonthlyDigestEmail: null,
+    movedToProfileId: null,
+    priority: user?.priority ?? 2,
+    weight: user?.weight ?? 100,
+    isPlatformManaged: false,
     ...user,
   };
 };

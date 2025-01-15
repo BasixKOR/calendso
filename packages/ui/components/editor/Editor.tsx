@@ -4,15 +4,24 @@ import { ListItemNode, ListNode } from "@lexical/list";
 import { TRANSFORMERS } from "@lexical/markdown";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
+import LexicalErrorBoundary from "@lexical/react/LexicalErrorBoundary";
+import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { LinkPlugin } from "@lexical/react/LexicalLinkPlugin";
 import { ListPlugin } from "@lexical/react/LexicalListPlugin";
 import { MarkdownShortcutPlugin } from "@lexical/react/LexicalMarkdownShortcutPlugin";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { HeadingNode, QuoteNode } from "@lexical/rich-text";
 import { TableCellNode, TableNode, TableRowNode } from "@lexical/table";
+import type { Dispatch, SetStateAction } from "react";
+
+import { classNames } from "@calcom/lib";
 
 import ExampleTheme from "./ExampleTheme";
+import { VariableNode } from "./nodes/VariableNode";
+import AddVariablesPlugin from "./plugins/AddVariablesPlugin";
 import AutoLinkPlugin from "./plugins/AutoLinkPlugin";
+import EditablePlugin from "./plugins/EditablePlugin";
+import PlainTextPlugin from "./plugins/PlainTextPlugin";
 import ToolbarPlugin from "./plugins/ToolbarPlugin";
 import "./stylesEditor.css";
 
@@ -28,14 +37,21 @@ export type TextEditorProps = {
   setText: (text: string) => void;
   excludedToolbarItems?: string[];
   variables?: string[];
+  addVariableButtonTop?: boolean;
   height?: string;
+  maxHeight?: string;
   placeholder?: string;
   disableLists?: boolean;
+  updateTemplate?: boolean;
+  firstRender?: boolean;
+  setFirstRender?: Dispatch<SetStateAction<boolean>>;
+  editable?: boolean;
+  plainText?: boolean;
 };
 
 const editorConfig = {
   theme: ExampleTheme,
-  onError(error: any) {
+  onError(error: Error) {
     throw error;
   },
   namespace: "",
@@ -51,28 +67,52 @@ const editorConfig = {
     TableRowNode,
     AutoLinkNode,
     LinkNode,
+    VariableNode,
   ],
 };
 
 export const Editor = (props: TextEditorProps) => {
+  const editable = props.editable ?? true;
+  const plainText = props.plainText ?? false;
   return (
-    <div className="editor">
-      <LexicalComposer initialConfig={editorConfig}>
-        <div className="editor-container">
+    <div className="editor rounded-md">
+      <LexicalComposer initialConfig={{ ...editorConfig }}>
+        <div className="editor-container hover:border-emphasis focus-within:ring-brand-default rounded-md p-0 transition focus-within:ring-2">
           <ToolbarPlugin
             getText={props.getText}
             setText={props.setText}
+            editable={editable}
             excludedToolbarItems={props.excludedToolbarItems}
             variables={props.variables}
+            addVariableButtonTop={props.addVariableButtonTop}
+            updateTemplate={props.updateTemplate}
+            firstRender={props.firstRender}
+            setFirstRender={props.setFirstRender}
           />
-          <div className="editor-inner" style={{ height: props.height }}>
+          <div
+            className={classNames("editor-inner scroll-bar overflow-x-hidden", !editable && "!bg-subtle")}
+            style={{ height: props.height, maxHeight: props.maxHeight }}>
             <RichTextPlugin
-              contentEditable={<ContentEditable style={{ height: props.height }} className="editor-input" />}
-              placeholder={<div className="-mt-11 p-3 text-sm text-gray-300">{props.placeholder || ""}</div>}
+              contentEditable={
+                <ContentEditable
+                  readOnly={!editable}
+                  style={{ height: props.height }}
+                  className="editor-input"
+                  data-testid="editor-input"
+                />
+              }
+              placeholder={
+                props?.placeholder ? (
+                  <div className="text-muted -mt-11 p-3 text-sm">{props.placeholder}</div>
+                ) : null
+              }
+              ErrorBoundary={LexicalErrorBoundary}
             />
             <ListPlugin />
             <LinkPlugin />
             <AutoLinkPlugin />
+            {props?.variables ? <AddVariablesPlugin variables={props.variables} /> : null}
+            <HistoryPlugin />
             <MarkdownShortcutPlugin
               transformers={
                 props.disableLists
@@ -84,6 +124,8 @@ export const Editor = (props: TextEditorProps) => {
             />
           </div>
         </div>
+        <EditablePlugin editable={editable} />
+        <PlainTextPlugin setText={props.setText} plainText={plainText} />
       </LexicalComposer>
     </div>
   );

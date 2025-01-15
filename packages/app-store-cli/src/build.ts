@@ -1,5 +1,6 @@
 import chokidar from "chokidar";
 import fs from "fs";
+// eslint-disable-next-line no-restricted-imports
 import { debounce } from "lodash";
 import path from "path";
 import prettier from "prettier";
@@ -7,15 +8,12 @@ import prettier from "prettier";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 //@ts-ignore
 import prettierConfig from "@calcom/config/prettier-preset";
-import { AppMeta } from "@calcom/types/App";
+import type { AppMeta } from "@calcom/types/App";
 
 import { APP_STORE_PATH } from "./constants";
 import { getAppName } from "./utils/getAppName";
 
-let isInWatchMode = false;
-if (process.argv[2] === "--watch") {
-  isInWatchMode = true;
-}
+const isInWatchMode = process.argv[2] === "--watch";
 
 const formatOutput = (source: string) =>
   prettier.format(source, {
@@ -23,14 +21,10 @@ const formatOutput = (source: string) =>
     ...prettierConfig,
   });
 
-const getVariableName = function (appName: string) {
-  return appName.replace(/[-.]/g, "_");
-};
+const getVariableName = (appName: string) => appName.replace(/[-.]/g, "_");
 
-const getAppId = function (app: { name: string }) {
-  // Handle stripe separately as it's an old app with different dirName than slug/appId
-  return app.name === "stripepayment" ? "stripe" : app.name;
-};
+// INFO: Handle stripe separately as it's an old app with different dirName than slug/appId
+const getAppId = (app: { name: string }) => (app.name === "stripepayment" ? "stripe" : app.name);
 
 type App = Partial<AppMeta> & {
   name: string;
@@ -39,6 +33,7 @@ type App = Partial<AppMeta> & {
 function generateFiles() {
   const browserOutput = [`import dynamic from "next/dynamic"`];
   const metadataOutput = [];
+  const bookerMetadataOutput = [];
   const schemasOutput = [];
   const appKeysSchemasOutput = [];
   const serverOutput = [];
@@ -69,22 +64,30 @@ function generateFiles() {
     }
   });
 
-  function forEachAppDir(callback: (arg: App) => void) {
+  function forEachAppDir(callback: (arg: App) => void, filter: (arg: App) => boolean = () => true) {
     for (let i = 0; i < appDirs.length; i++) {
       const configPath = path.join(APP_STORE_PATH, appDirs[i].path, "config.json");
+      const metadataPath = path.join(APP_STORE_PATH, appDirs[i].path, "_metadata.ts");
       let app;
 
       if (fs.existsSync(configPath)) {
         app = JSON.parse(fs.readFileSync(configPath).toString());
+      } else if (fs.existsSync(metadataPath)) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        app = require(metadataPath).metadata;
       } else {
         app = {};
       }
 
-      callback({
+      const finalApp = {
         ...app,
         name: appDirs[i].name,
         path: appDirs[i].path,
-      });
+      };
+
+      if (filter(finalApp)) {
+        callback(finalApp);
+      }
     }
   }
 
@@ -94,10 +97,9 @@ function generateFiles() {
    * If a file has index.ts or index.tsx, it can be imported after removing the index.ts* part
    */
   function getModulePath(path: string, moduleName: string) {
-    return (
-      `./${path.replace(/\\/g, "/")}/` +
-      moduleName.replace(/\/index\.ts|\/index\.tsx/, "").replace(/\.tsx$|\.ts$/, "")
-    );
+    return `./${path.replace(/\\/g, "/")}/${moduleName
+      .replace(/\/index\.ts|\/index\.tsx/, "")
+      .replace(/\.tsx$|\.ts$/, "")}`;
   }
 
   type ImportConfig =
@@ -129,7 +131,8 @@ function generateFiles() {
       lazyImport?: boolean;
       importConfig: ImportConfig;
       entryObjectKeyGetter?: (arg: App, importName?: string) => string;
-    }
+    },
+    filter?: (arg: App) => boolean
   ) {
     const output: string[] = [];
 
@@ -173,7 +176,7 @@ function generateFiles() {
             }
           }
         }
-      });
+      }, filter);
     }
 
     function createExportObject() {
@@ -200,7 +203,7 @@ function generateFiles() {
             }
           }
         }
-      });
+      }, filter);
 
       output.push(`};`);
     }
@@ -246,6 +249,25 @@ function generateFiles() {
     })
   );
 
+  bookerMetadataOutput.push(
+    ...getExportedObject(
+      "appStoreMetadata",
+      {
+        // Try looking for config.json and if it's not found use _metadata.ts to generate appStoreMetadata
+        importConfig: [
+          {
+            fileToBeImported: "config.json",
+            importName: "default",
+          },
+          {
+            fileToBeImported: "_metadata.ts",
+            importName: "metadata",
+          },
+        ],
+      },
+      isBookerApp
+    )
+  );
   schemasOutput.push(
     ...getExportedObject("appDataSchemas", {
       // Import path must have / even for windows and not \
@@ -299,6 +321,14 @@ function generateFiles() {
       lazyImport: true,
     })
   );
+  browserOutput.push(
+    ...getExportedObject("EventTypeSettingsMap", {
+      importConfig: {
+        fileToBeImported: "components/EventTypeAppSettingsInterface.tsx",
+      },
+      lazyImport: true,
+    })
+  );
 
   const banner = `/**
     This file is autogenerated using the command \`yarn app-store:build --watch\`.
@@ -311,6 +341,7 @@ function generateFiles() {
     ["apps.browser.generated.tsx", browserOutput],
     ["apps.schemas.generated.ts", schemasOutput],
     ["apps.keys-schemas.generated.ts", appKeysSchemasOutput],
+    ["bookerApps.metadata.generated.ts", bookerMetadataOutput],
   ];
   filesToGenerate.forEach(([fileName, output]) => {
     fs.writeFileSync(`${APP_STORE_PATH}/${fileName}`, formatOutput(`${banner}${output.join("\n")}`));
@@ -345,4 +376,12 @@ if (isInWatchMode) {
     });
 } else {
   generateFiles();
+}
+
+function isBookerApp(app: App) {
+  // Right now there are only two types of Apps that booker needs.
+  // Note that currently payment apps' meta don't need to be accessed on booker. We just access from DB eventType.metadata
+  // 1. It is a location app(e.g. any Conferencing App)
+  // 2. It is a tag manager app(e.g. Google Analytics, GTM, Fathom)
+  return !!(app.appData?.location || app.appData?.tag);
 }

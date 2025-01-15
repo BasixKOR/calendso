@@ -1,13 +1,55 @@
-import { MembershipRole } from "@prisma/client";
-import { SyntheticEvent, useMemo, useState } from "react";
+import type { SyntheticEvent } from "react";
+import { useMemo, useState } from "react";
 
 import { useLocale } from "@calcom/lib/hooks/useLocale";
+import { MembershipRole } from "@calcom/prisma/enums";
 import { trpc } from "@calcom/trpc/react";
-import { Button, Dialog, DialogContent, Select } from "@calcom/ui";
+import { Button, Dialog, DialogContent, DialogFooter, Select } from "@calcom/ui";
 
 type MembershipRoleOption = {
   label: string;
   value: MembershipRole;
+};
+
+export const updateRoleInCache = ({
+  utils,
+  teamId,
+  searchTerm,
+  role,
+  memberId,
+}: {
+  utils: ReturnType<typeof trpc.useUtils>;
+  teamId: number;
+  searchTerm: string | undefined;
+  role: MembershipRole;
+  memberId: number;
+}) => {
+  utils.viewer.teams.listMembers.setInfiniteData(
+    {
+      limit: 10,
+      teamId,
+      searchTerm,
+    },
+    (data) => {
+      if (!data) {
+        return {
+          pages: [],
+          pageParams: [],
+        };
+      }
+
+      return {
+        ...data,
+        pages: data.pages.map((page) => ({
+          ...page,
+          members: page.members.map((member) => ({
+            ...member,
+            role: member.id === memberId ? role : member.role,
+          })),
+        })),
+      };
+    }
+  );
 };
 
 export default function MemberChangeRoleModal(props: {
@@ -17,6 +59,7 @@ export default function MemberChangeRoleModal(props: {
   teamId: number;
   initialRole: MembershipRole;
   onExit: () => void;
+  searchTerm?: string;
 }) {
   const { t } = useLocale();
 
@@ -44,11 +87,27 @@ export default function MemberChangeRoleModal(props: {
     }
   );
   const [errorMessage, setErrorMessage] = useState("");
-  const utils = trpc.useContext();
+  const utils = trpc.useUtils();
 
   const changeRoleMutation = trpc.viewer.teams.changeMemberRole.useMutation({
+    onMutate: async ({ teamId, memberId, role }) => {
+      await utils.viewer.teams.listMembers.cancel();
+      const previousValue = utils.viewer.teams.listMembers.getInfiniteData({
+        limit: 10,
+        teamId,
+        searchTerm: props.searchTerm,
+      });
+
+      if (previousValue) {
+        updateRoleInCache({ utils, teamId, memberId, role, searchTerm: props.searchTerm });
+      }
+
+      return { previousValue };
+    },
     async onSuccess() {
       await utils.viewer.teams.get.invalidate();
+      await utils.viewer.organizations.listMembers.invalidate();
+
       props.onExit();
     },
     async onError(err) {
@@ -71,14 +130,16 @@ export default function MemberChangeRoleModal(props: {
         <>
           <div className="mb-4 sm:flex sm:items-start">
             <div className="text-center sm:text-left">
-              <h3 className="text-lg font-medium leading-6 text-gray-900" id="modal-title">
+              <h3
+                className="text-emphasis !font-cal text-semibold leading-20 text-xl font-medium"
+                id="modal-title">
                 {t("change_member_role")}
               </h3>
             </div>
           </div>
           <form onSubmit={changeRole}>
             <div className="mb-4">
-              <label className="mb-2 block text-sm font-medium tracking-wide text-gray-700" htmlFor="role">
+              <label className="text-default mb-2 block text-sm font-medium tracking-wide" htmlFor="role">
                 {t("role")}
               </label>
               {/*<option value="OWNER">{t("owner")}</option> - needs dialog to confirm change of ownership */}
@@ -88,7 +149,7 @@ export default function MemberChangeRoleModal(props: {
                 value={role}
                 onChange={(option) => option && setRole(option)}
                 id="role"
-                className="mt-1 block w-full rounded-md border-gray-300 text-sm"
+                className="border-default mt-1 block w-full rounded-md text-sm"
               />
             </div>
             {errorMessage && (
@@ -97,14 +158,14 @@ export default function MemberChangeRoleModal(props: {
                 {errorMessage}
               </p>
             )}
-            <div className="mt-5 sm:mt-4 sm:flex sm:flex-row-reverse">
-              <Button type="submit" color="primary" className="ltr:ml-2 ltr:mr-2 rtl:ml-2">
-                {t("save")}
-              </Button>
+            <DialogFooter className="mt-12">
               <Button type="button" color="secondary" onClick={props.onExit}>
                 {t("cancel")}
               </Button>
-            </div>
+              <Button type="submit" color="primary" className="me-2 ms-2">
+                {t("save")}
+              </Button>
+            </DialogFooter>
           </form>
         </>
       </DialogContent>

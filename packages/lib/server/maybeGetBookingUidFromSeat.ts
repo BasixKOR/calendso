@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@calcom/prisma";
 
 export async function maybeGetBookingUidFromSeat(prisma: PrismaClient, uid: string) {
   // Look bookingUid in bookingSeat
@@ -13,8 +13,9 @@ export async function maybeGetBookingUidFromSeat(prisma: PrismaClient, uid: stri
           uid: true,
         },
       },
+      data: true,
     },
   });
-  if (bookingSeat) return bookingSeat.booking.uid;
-  return uid;
+  if (bookingSeat) return { uid: bookingSeat.booking.uid, seatReferenceUid: uid, bookingSeat };
+  return { uid };
 }

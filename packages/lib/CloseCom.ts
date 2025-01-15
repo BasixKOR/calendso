@@ -1,21 +1,31 @@
 import logger from "@calcom/lib/logger";
+import prisma from "@calcom/prisma";
 
 export type CloseComLead = {
   companyName?: string | null | undefined;
   contactName?: string;
   contactEmail?: string;
   description?: string;
+  id?: string | PromiseLike<string>;
 };
 
 export type CloseComFieldOptions = [string, string, boolean, boolean][];
+
+type CloseComContactEmail = {
+  email: string;
+  type: string;
+};
 
 export type CloseComLeadCreateResult = {
   status_id: string;
   status_label: string;
   display_name: string;
-  addresses: { [key: string]: any }[];
+  addresses: { [key: string]: string }[];
   name: string;
-  contacts: { [key: string]: any }[];
+  contacts: {
+    id: string;
+    emails: CloseComContactEmail[];
+  }[];
   [key: CloseComCustomActivityCustomField<string>]: string;
   id: string;
 };
@@ -34,10 +44,7 @@ export type CloseComCustomActivityTypeCreate = {
 export type CloseComContactSearch = {
   data: {
     __object_type: "contact";
-    emails: {
-      email: string;
-      type: string;
-    }[];
+    emails: CloseComContactEmail[];
     id: string;
     lead_id: string;
     name: string;
@@ -119,7 +126,7 @@ export type CloseComCustomActivityCreate = {
 
 export type typeCloseComCustomActivityGet = {
   organization_id: string;
-  contact_id: any;
+  contact_id: string;
   date_updated: string;
   user_name: string;
   created_by_name: "Bruce Wayne";
@@ -127,7 +134,7 @@ export type typeCloseComCustomActivityGet = {
   created_by: string;
   status: string;
   user_id: string;
-  users: any[];
+  users: string[];
   lead_id: string;
   _type: string;
   updated_by: string;
@@ -139,10 +146,46 @@ export type typeCloseComCustomActivityGet = {
 
 type CloseComCustomActivityCustomField<T extends string> = `custom.${T}`;
 
-const environmentApiKey = process.env.CLOSECOM_API_KEY || "";
+type CloseComQuery = {
+  negate?: boolean;
+  queries?: CloseComQuery[] | CloseComCondition[];
+  object_type?: string;
+  related_object_type?: string;
+  related_query?: CloseComQuery;
+  this_object_type?: string;
+  type?: "object_type" | "has_related" | "and" | "or";
+  _fields?: string[];
+};
+
+type CloseComCondition = {
+  condition: {
+    mode: "full_words";
+    type: "text";
+    value: string;
+  };
+  field: {
+    field_name: string;
+    object_type: string;
+    type: "regular_field";
+  };
+  negate: boolean;
+  type: "field_condition";
+};
+
+export type CloseComCustomFieldCreateResponse = {
+  data: {
+    id: string;
+    name?: string;
+    type?: string;
+    required?: boolean;
+    accepts_multiple_values: boolean;
+    editable_with_roles: string[];
+    custom_activity_type_id?: string;
+  };
+};
 
 /**
- * This class to instance communicating to Close.com APIs requires an API Key.
+ * This class to instance communicating to Close.com APIs requires an API Key (legacy) or OAuth.
  *
  * You can either pass to the constructor an API Key or have one defined as an
  * environment variable in case the communication to Close.com is just for
@@ -150,13 +193,128 @@ const environmentApiKey = process.env.CLOSECOM_API_KEY || "";
  */
 export default class CloseCom {
   private apiUrl = "https://api.close.com/api/v1";
-  private apiKey: string | undefined = undefined;
+  private api_key: string;
+  private refresh_token?: string;
+  private expires_at?: number;
+  private isOAuth: boolean;
   private log: typeof logger;
+  private userId?: number;
 
-  constructor(providedApiKey = "") {
-    this.log = logger.getChildLogger({ prefix: [`[[lib] close.com`] });
-    if (!providedApiKey && !environmentApiKey) throw Error("Close.com Api Key not present");
-    this.apiKey = providedApiKey || environmentApiKey;
+  constructor(
+    apiKey: string,
+    options?: {
+      refresh_token?: string;
+      expires_at?: number;
+      isOAuth?: boolean;
+      userId?: number;
+    }
+  ) {
+    this.log = logger.getSubLogger({ prefix: [`[[lib] close.com`] });
+    this.api_key = apiKey;
+    this.refresh_token = options?.refresh_token;
+    this.expires_at = options?.expires_at;
+    this.isOAuth = options?.isOAuth || false;
+    this.userId = options?.userId;
+  }
+
+  private async getHeaders() {
+    if (this.isOAuth) {
+      // Check if token needs refresh
+      if (await this.shouldRefreshToken()) {
+        await this.refreshAccessToken();
+      }
+      return {
+        Authorization: `Bearer ${this.api_key}`,
+        "Content-Type": "application/json",
+      };
+    }
+
+    // API key auth
+    return {
+      Authorization: `Basic ${Buffer.from(`${this.api_key}:`).toString("base64")}`,
+      "Content-Type": "application/json",
+    };
+  }
+
+  private async shouldRefreshToken(): Promise<boolean> {
+    if (!this.expires_at) return false;
+
+    // Refresh token if it expires in less than 5 minutes
+    const fiveMinutesInMs = 5 * 60 * 1000;
+    return Date.now() + fiveMinutesInMs >= this.expires_at;
+  }
+
+  private async refreshAccessToken() {
+    if (!this.refresh_token) throw new Error("No refresh token available");
+    if (!this.userId) throw new Error("No userId available for token refresh");
+
+    try {
+      const response = await fetch("https://api.close.com/oauth2/token/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: this.refresh_token,
+          client_id: process.env.CLOSECOM_CLIENT_ID!,
+          client_secret: process.env.CLOSECOM_CLIENT_SECRET!,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to refresh token");
+      }
+
+      const data = await response.json();
+
+      this.api_key = data.access_token;
+      this.refresh_token = data.refresh_token;
+      this.expires_at = Date.now() + data.expires_in * 1000;
+
+      try {
+        const credential = await prisma.credential.findFirst({
+          where: {
+            userId: this.userId,
+            type: "closecom_crm",
+          },
+          select: {
+            id: true,
+          },
+        });
+
+        if (!credential?.id) {
+          throw new Error("Credential not found");
+        }
+
+        await prisma.credential.update({
+          where: {
+            id: credential.id,
+          },
+          data: {
+            key: {
+              access_token: data.access_token,
+              refresh_token: data.refresh_token,
+              expires_at: this.expires_at,
+            },
+          },
+        });
+      } catch (error) {
+        this.log.error("Failed to update credentials in database", error);
+      }
+
+      return {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        expires_at: this.expires_at,
+      };
+    } catch (error) {
+      this.log.error("Token refresh process failed", {
+        error,
+        userId: this.userId,
+      });
+      throw error;
+    }
   }
 
   public me = async () => {
@@ -200,8 +358,8 @@ export default class CloseCom {
     list: async ({
       query,
     }: {
-      query: { [key: string]: any };
-    }): Promise<{ data: { [key: string]: any }[] }> => {
+      query: CloseComQuery;
+    }): Promise<{ data: { [key: string]: CloseComQuery }[] }> => {
       return this._get({ urlPath: "/lead", query });
     },
     status: async () => {
@@ -247,7 +405,7 @@ export default class CloseCom {
       ): Promise<CloseComCustomActivityFieldGet["data"][number]> => {
         return this._post({ urlPath: "/custom_field/activity/", data });
       },
-      get: async ({ query }: { query: { [key: string]: any } }): Promise<CloseComCustomActivityFieldGet> => {
+      get: async ({ query }: { query: CloseComQuery }): Promise<CloseComCustomActivityFieldGet> => {
         return this._get({ urlPath: "/custom_field/activity/", query });
       },
     },
@@ -257,12 +415,12 @@ export default class CloseCom {
       ): Promise<CloseComCustomContactFieldGet["data"][number]> => {
         return this._post({ urlPath: "/custom_field/contact/", data });
       },
-      get: async ({ query }: { query: { [key: string]: any } }): Promise<CloseComCustomContactFieldGet> => {
+      get: async ({ query }: { query: CloseComQuery }): Promise<CloseComCustomContactFieldGet> => {
         return this._get({ urlPath: "/custom_field/contact/", query });
       },
     },
     shared: {
-      get: async ({ query }: { query: { [key: string]: any } }): Promise<CloseComCustomContactFieldGet> => {
+      get: async ({ query }: { query: CloseComQuery }): Promise<CloseComCustomContactFieldGet> => {
         return this._get({ urlPath: "/custom_field/shared/", query });
       },
     },
@@ -287,7 +445,7 @@ export default class CloseCom {
     },
   };
 
-  private _get = async ({ urlPath, query }: { urlPath: string; query?: { [key: string]: any } }) => {
+  private _get = async ({ urlPath, query }: { urlPath: string; query?: CloseComQuery }) => {
     return await this._request({ urlPath, method: "get", query });
   };
   private _post = async ({ urlPath, data }: { urlPath: string; data: Record<string, unknown> }) => {
@@ -307,16 +465,12 @@ export default class CloseCom {
   }: {
     urlPath: string;
     method: string;
-    query?: { [key: string]: any };
+    query?: CloseComQuery;
     data?: Record<string, unknown>;
   }) => {
     this.log.debug(method, urlPath, query, data);
-    const credentials = Buffer.from(`${this.apiKey}:`).toString("base64");
-    const headers = {
-      Authorization: `Basic ${credentials}`,
-      "Content-Type": "application/json",
-    };
-    const queryString = query ? `?${new URLSearchParams(query).toString()}` : "";
+    const headers = await this.getHeaders();
+    const queryString = query ? `?${new URLSearchParams(String(query)).toString()}` : "";
     return await fetch(`${this.apiUrl}${urlPath}${queryString}`, {
       headers,
       method,

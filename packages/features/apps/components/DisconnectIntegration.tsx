@@ -1,27 +1,13 @@
+"use client";
+
 import { useState } from "react";
 
 import { useLocale } from "@calcom/lib/hooks/useLocale";
 import { trpc } from "@calcom/trpc/react";
-import {
-  Button,
-  ButtonProps,
-  Dialog,
-  DialogContent,
-  DialogTrigger,
-  showToast,
-  DialogFooter,
-  DialogClose,
-} from "@calcom/ui";
-import { FiTrash, FiAlertCircle } from "@calcom/ui/components/icon";
+import type { ButtonProps } from "@calcom/ui";
+import { DisconnectIntegrationComponent, showToast } from "@calcom/ui";
 
-export default function DisconnectIntegration({
-  credentialId,
-  label,
-  trashIcon,
-  isGlobal,
-  onSuccess,
-  buttonProps,
-}: {
+export default function DisconnectIntegration(props: {
   credentialId: number;
   label?: string;
   trashIcon?: boolean;
@@ -30,8 +16,9 @@ export default function DisconnectIntegration({
   buttonProps?: ButtonProps;
 }) {
   const { t } = useLocale();
+  const { onSuccess, credentialId } = props;
   const [modalOpen, setModalOpen] = useState(false);
-  const utils = trpc.useContext();
+  const utils = trpc.useUtils();
 
   const mutation = trpc.viewer.deleteCredential.useMutation({
     onSuccess: () => {
@@ -45,36 +32,16 @@ export default function DisconnectIntegration({
     },
     async onSettled() {
       await utils.viewer.connectedCalendars.invalidate();
+      await utils.viewer.integrations.invalidate();
     },
   });
 
   return (
-    <>
-      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-        <DialogTrigger asChild>
-          <Button
-            color={buttonProps?.color || "destructive"}
-            StartIcon={trashIcon ? FiTrash : undefined}
-            size="base"
-            variant={trashIcon && !label ? "icon" : "button"}
-            disabled={isGlobal}
-            {...buttonProps}>
-            {label && label}
-          </Button>
-        </DialogTrigger>
-        <DialogContent
-          title={t("remove_app")}
-          description={t("are_you_sure_you_want_to_remove_this_app")}
-          type="confirmation"
-          Icon={FiAlertCircle}>
-          <DialogFooter>
-            <DialogClose onClick={() => setModalOpen(false)} />
-            <DialogClose color="primary" onClick={() => mutation.mutate({ id: credentialId })}>
-              {t("yes_remove_app")}
-            </DialogClose>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <DisconnectIntegrationComponent
+      onDeletionConfirmation={() => mutation.mutate({ id: credentialId })}
+      isModalOpen={modalOpen}
+      onModalOpen={() => setModalOpen((prevValue) => !prevValue)}
+      {...props}
+    />
   );
 }

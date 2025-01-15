@@ -8,7 +8,6 @@ import stripe from "@calcom/features/ee/payments/server/stripe";
 import { WEBAPP_URL } from "@calcom/lib/constants";
 import { HttpError } from "@calcom/lib/http-error";
 import { defaultHandler, defaultResponder } from "@calcom/lib/server";
-import { closeComUpdateTeam } from "@calcom/lib/sync/SyncServiceManager";
 import prisma from "@calcom/prisma";
 import { teamMetadataSchema } from "@calcom/prisma/zod-utils";
 
@@ -34,14 +33,21 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
     where: { metadata: { path: ["paymentId"], equals: checkoutSession.id } },
   });
 
+  let metadata;
+
   if (!team) {
     const prevTeam = await prisma.team.findFirstOrThrow({ where: { id } });
-    const metadata = teamMetadataSchema.parse(prevTeam.metadata);
+
+    metadata = teamMetadataSchema.safeParse(prevTeam.metadata);
+    if (!metadata.success) throw new HttpError({ statusCode: 400, message: "Invalid team metadata" });
+
+    const { requestedSlug, ...newMetadata } = metadata.data || {};
     /** We save the metadata first to prevent duplicate payments */
     team = await prisma.team.update({
       where: { id },
       data: {
         metadata: {
+          ...newMetadata,
           paymentId: checkoutSession.id,
           subscriptionId: subscription.id || null,
           subscriptionItemId: subscription.items.data[0].id || null,
@@ -49,7 +55,7 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
       },
     });
     /** Legacy teams already have a slug, this will allow them to upgrade as well */
-    const slug = prevTeam.slug || metadata?.requestedSlug;
+    const slug = prevTeam.slug || requestedSlug;
     if (slug) {
       try {
         /** Then we try to upgrade the slug, which may fail if a conflict came up since team creation */
@@ -59,17 +65,23 @@ async function handler(req: NextApiRequest, res: NextApiResponse) {
         return res.status(statusCode).json({ message });
       }
     }
+  }
 
-    // Sync Services: Close.com
-    closeComUpdateTeam(prevTeam, team);
+  if (!metadata) {
+    metadata = teamMetadataSchema.safeParse(team.metadata);
+    if (!metadata.success) throw new HttpError({ statusCode: 400, message: "Invalid team metadata" });
   }
 
   const session = await getServerSession({ req, res });
 
   if (!session) return { message: "Team upgraded successfully" };
 
+  const redirectUrl = team?.isOrganization
+    ? `${WEBAPP_URL}/settings/organizations/profile?upgraded=true`
+    : `${WEBAPP_URL}/settings/teams/${team.id}/profile?upgraded=true`;
+
   // redirect to team screen
-  res.redirect(302, `${WEBAPP_URL}/settings/teams/${team.id}/profile?upgraded=true`);
+  res.redirect(302, redirectUrl);
 }
 
 export default defaultHandler({

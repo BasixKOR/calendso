@@ -1,6 +1,7 @@
 import { useState } from "react";
 
-import { MembershipRole } from "@calcom/prisma/client";
+import { trackFormbricksAction } from "@calcom/lib/formbricks-client";
+import type { MembershipRole } from "@calcom/prisma/enums";
 import { trpc } from "@calcom/trpc/react";
 import { showToast } from "@calcom/ui";
 
@@ -11,16 +12,16 @@ interface Props {
     id?: number;
     name?: string | null;
     slug?: string | null;
-    logo?: string | null;
     bio?: string | null;
     hideBranding?: boolean | undefined;
     role: MembershipRole;
+    logoUrl?: string | null;
     accepted: boolean;
   }[];
 }
 
 export default function TeamInviteList(props: Props) {
-  const utils = trpc.useContext();
+  const utils = trpc.useUtils();
 
   const [hideDropdown, setHideDropdown] = useState(false);
 
@@ -35,6 +36,9 @@ export default function TeamInviteList(props: Props) {
   const deleteTeamMutation = trpc.viewer.teams.delete.useMutation({
     async onSuccess() {
       await utils.viewer.teams.list.invalidate();
+      await utils.viewer.teams.get.invalidate();
+      await utils.viewer.organizations.listMembers.invalidate();
+      trackFormbricksAction("team_disbanded");
     },
     async onError(err) {
       showToast(err.message, "error");
@@ -47,13 +51,13 @@ export default function TeamInviteList(props: Props) {
 
   return (
     <div>
-      <ul className="mb-8 divide-y divide-neutral-200 rounded bg-white">
+      <ul className="bg-default divide-subtle mb-8 divide-y rounded">
         {props.teams.map((team) => (
           <TeamInviteListItem
             key={team?.id as number}
             team={team}
             onActionSelect={(action: string) => selectAction(action, team?.id as number)}
-            isLoading={deleteTeamMutation.isLoading}
+            isPending={deleteTeamMutation.isPending}
             hideDropdown={hideDropdown}
             setHideDropdown={setHideDropdown}
           />

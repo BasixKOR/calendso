@@ -1,18 +1,33 @@
 import type { App_RoutingForms_Form } from "@prisma/client";
 import type { NextApiRequest, NextApiResponse } from "next";
+import { getSession } from "next-auth/react";
 
+import { sanitizeValue } from "@calcom/lib/csvUtils";
+import { entityPrismaWhereClause, canEditEntity } from "@calcom/lib/entityPermissionUtils";
 import prisma from "@calcom/prisma";
 
 import { getSerializableForm } from "../../lib/getSerializableForm";
-import type { Response, SerializableForm } from "../../types/types";
+import { ensureStringOrStringArray, getLabelsFromOptionIds } from "../../lib/reportingUtils";
+import type { FormResponse, SerializableForm } from "../../types/types";
 
-function escapeCsvText(str: string) {
-  return str.replace(/,/, "%2C");
+type Fields = NonNullable<SerializableForm<App_RoutingForms_Form>["fields"]>;
+
+function getHumanReadableFieldResponseValue({
+  field,
+  value,
+}: {
+  field: Fields[number];
+  value: string | number | string[];
+}) {
+  if (field.options) {
+    const optionIds = ensureStringOrStringArray(value);
+    return getLabelsFromOptionIds({ options: field.options, optionIds });
+  } else {
+    return (value instanceof Array ? value : [value]).map(String);
+  }
 }
-async function* getResponses(
-  formId: string,
-  headerFields: NonNullable<SerializableForm<App_RoutingForms_Form>["fields"]>
-) {
+
+async function* getResponses(formId: string, fields: Fields) {
   let responses;
   let skip = 0;
   // Keep it small enough to be in Vercel limits of Serverless Function in terms of memory.
@@ -30,17 +45,13 @@ async function* getResponses(
   ) {
     const csv: string[] = [];
     responses.forEach((response) => {
-      const fieldResponses = response.response as Response;
+      const fieldResponses = response.response as FormResponse;
       const csvCells: string[] = [];
-      headerFields.forEach((headerField) => {
-        const fieldResponse = fieldResponses[headerField.id];
+      fields.forEach((field) => {
+        const fieldResponse = fieldResponses[field.id];
         const value = fieldResponse?.value || "";
-        let serializedValue = "";
-        if (value instanceof Array) {
-          serializedValue = value.map((val) => escapeCsvText(val)).join(" | ");
-        } else {
-          serializedValue = escapeCsvText(value);
-        }
+        const readableValues = getHumanReadableFieldResponseValue({ field, value });
+        const serializedValue = readableValues.map((value) => sanitizeValue(value)).join(" | ");
         csvCells.push(serializedValue);
       });
       csvCells.push(response.createdAt.toISOString());
@@ -54,6 +65,7 @@ async function* getResponses(
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const { args } = req.query;
+
   if (!args) {
     throw new Error("args must be set");
   }
@@ -62,16 +74,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     throw new Error("formId must be provided");
   }
 
+  const session = await getSession({ req });
+
+  if (!session) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  const { user } = session;
+
   const form = await prisma.app_RoutingForms_Form.findFirst({
     where: {
       id: formId,
+      ...entityPrismaWhereClause({ userId: user.id }),
     },
   });
 
   if (!form) {
-    throw new Error("Form not found");
+    return res.status(404).json({ message: "Form not found or unauthorized" });
   }
-  const serializableForm = await getSerializableForm(form, true);
+
+  if (!(await canEditEntity(form, user.id))) {
+    return res.status(404).json({ message: "Form not found or unauthorized" });
+  }
+
+  const serializableForm = await getSerializableForm({ form, withDeletedFields: true });
   res.setHeader("Content-Type", "text/csv; charset=UTF-8");
   res.setHeader(
     "Content-Disposition",
@@ -83,10 +109,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   // Make Header
   res.write(
-    headerFields
+    `${headerFields
       .map((field) => `${field.label}${field.deleted ? "(Deleted)" : ""}`)
       .concat(["Submission Time"])
-      .join(",") + "\n"
+      .join(",")}\n`
   );
 
   for await (const partialCsv of csvIterator) {

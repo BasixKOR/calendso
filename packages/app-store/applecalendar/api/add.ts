@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 
-import { symmetricEncrypt } from "@calcom/lib/crypto";
+import { symmetricDecrypt, symmetricEncrypt } from "@calcom/lib/crypto";
 import logger from "@calcom/lib/logger";
 import prisma from "@calcom/prisma";
 
@@ -16,14 +16,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         id: req.session?.user?.id,
       },
       select: {
+        email: true,
         id: true,
+        credentials: {
+          where: {
+            type: "apple_calendar",
+          },
+        },
       },
     });
 
+    let credentialExistsWithInputPassword = false;
+
+    const credentialExistsWithUsername = user.credentials.find((credential) => {
+      const decryptedCredential = JSON.parse(
+        symmetricDecrypt(credential.key?.toString() || "", process.env.CALENDSO_ENCRYPTION_KEY || "")
+      );
+
+      if (decryptedCredential.username === username) {
+        if (decryptedCredential.password === password) {
+          credentialExistsWithInputPassword = true;
+        }
+        return true;
+      }
+    });
+
+    if (credentialExistsWithInputPassword) return res.status(409).json({ message: "account_already_linked" });
+
     const data = {
       type: "apple_calendar",
-      key: symmetricEncrypt(JSON.stringify({ username, password }), process.env.CALENDSO_ENCRYPTION_KEY!),
+      key: symmetricEncrypt(
+        JSON.stringify({ username, password }),
+        process.env.CALENDSO_ENCRYPTION_KEY || ""
+      ),
       userId: user.id,
+      teamId: null,
       appId: "apple-calendar",
       invalid: false,
     };
@@ -32,14 +59,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const dav = new CalendarService({
         id: 0,
         ...data,
+        user: { email: user.email },
       });
       await dav?.listCalendars();
-      await prisma.credential.create({
-        data,
+      await prisma.credential.upsert({
+        where: {
+          id: credentialExistsWithUsername?.id ?? -1,
+        },
+        create: data,
+        update: data,
       });
     } catch (reason) {
-      logger.error("Could not add this caldav account", reason);
-      return res.status(500).json({ message: "Could not add this caldav account" });
+      logger.error("Could not add this apple calendar account", reason);
+      return res.status(500).json({ message: "unable_to_add_apple_calendar" });
     }
 
     return res
